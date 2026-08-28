@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ApricotFramework.Mailer/ApricotFramework.Mailer.csproj" />
+    <Project Path="src/ApricotFramework.Mailer.Smtp/ApricotFramework.Mailer.Smtp.csproj" />
+    <Project Path="src/ApricotFramework.Mailer.DependencyInjection/ApricotFramework.Mailer.DependencyInjection.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <File Path="tests\.editorconfig" />
+    <Project Path="tests/ApricotFramework.Mailer.Tests/ApricotFramework.Mailer.Tests.csproj" />
+    <Project Path="tests/ApricotFramework.Mailer.Smtp.Tests/ApricotFramework.Mailer.Smtp.Tests.csproj" />
+    <Project Path="tests/ApricotFramework.Mailer.DependencyInjection.Tests/ApricotFramework.Mailer.DependencyInjection.Tests.csproj" />
+  </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/ApricotFramework.Mailer.Examples.Web/ApricotFramework.Mailer.Examples.Web.csproj" />
+  </Folder>
+</Solution>

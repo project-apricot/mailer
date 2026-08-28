@@ -1,0 +1,64 @@
+---
+title: Mailer
+description: Sending mail from .NET, with named accounts and pluggable transports.
+---
+
+# Mailer
+
+Sending mail, configured the way a connection string is: named accounts in one settings section, each
+naming the transport that carries it. What a transport needs — a host, a port, an API key — stays that
+transport's business, so adding a vendor changes nothing about the accounts you already have.
+
+## Packages
+
+| Package | What it is |
+| --- | --- |
+| `ApricotFramework.Mailer` | The zero-dependency core: the message model, accounts, the transport contract |
+| `ApricotFramework.Mailer.Smtp` | SMTP delivery over MailKit, plus a pickup directory that writes `.eml` files |
+| `ApricotFramework.Mailer.DependencyInjection` | Accounts bound from configuration, startup validation, logging, account caching |
+
+None of these needs ASP.NET Core: the integration package depends only on `Microsoft.Extensions.*`,
+so a worker or console host can use the whole set. The core alone needs no container at all —
+`new DefaultMailer(...)` works on its own.
+
+## Install
+
+```bash
+dotnet add package ApricotFramework.Mailer
+dotnet add package ApricotFramework.Mailer.Smtp
+dotnet add package ApricotFramework.Mailer.DependencyInjection
+```
+
+## The model
+
+Three things, and the seams between them are the whole design:
+
+- An **account** is a named identity to send as: a transport, that transport's settings, and the
+  sender to fall back to. `SendAsync(message)` uses the default one; `SendAsync("billing", message)`
+  names one.
+- A **transport** carries the message. It is stateless and receives the account on every send, so one
+  registration serves any number of accounts and a rotated credential takes effect immediately.
+- A **result** says what happened. A refusal, a timeout, an unknown account — all results.
+
+```csharp
+var result = await mailer.SendAsync(message);
+
+if (!result.Succeeded && result.IsTransient())
+{
+    // Connection, Timeout or Throttled: the condition typically clears
+}
+```
+
+> **Note.** Only cancellation throws. Everything else — including a message with no recipient and an
+> account that does not exist — comes back as a `MailSendResult`, because talking to a mail server
+> fails routinely and a caller should not need a `catch` to handle that.
+
+## What is not here
+
+No templating: render the body yourself and put the string in `EmailBody`.
+[Razor Engine](../razor-engine/index.mdx) exists for exactly that. No queue, no outbox, no retry —
+`IsTransient()` tells you when a retry is worthwhile, and where the retry lives is your decision. No
+encryption of stored credentials: see [accounts](./accounts.mdx) for where that belongs instead.
+
+Continue with [usage](./usage.mdx), [accounts](./accounts.mdx), [SMTP](./smtp.mdx) or
+[dependency injection](./dependency-injection.mdx).

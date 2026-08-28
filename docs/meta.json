@@ -1,0 +1,11 @@
+{
+  "title": "Mailer",
+  "description": "Sending mail from .NET: named accounts, pluggable transports, and results instead of exceptions.",
+  "pages": [
+    "index",
+    "usage",
+    "accounts",
+    "smtp",
+    "dependency-injection"
+  ]
+}

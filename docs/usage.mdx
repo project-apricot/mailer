@@ -1,0 +1,113 @@
+---
+title: Usage
+description: Building a message, sending it, and reading the result.
+---
+
+# Usage
+
+## Building a message
+
+```csharp
+var message = new EmailMessage
+{
+    Subject = "Welcome",
+    Body = EmailBody.FromBoth("<b>Hello</b>", "Hello"),
+    To = [EmailAddress.Parse("someone@example.com", "Someone")],
+    Cc = [EmailAddress.Parse("audit@example.com")],
+};
+```
+
+`Subject`, `Body` and `To` are required; everything else has a default. `From` is optional because the
+account usually supplies it — set it only when this message should come from somewhere else.
+
+`EmailBody` has three factories, and a part you do not supply is **absent** rather than empty:
+`FromHtml`, `FromText`, `FromBoth`. An HTML-only body is a single HTML part, not an alternative with
+an empty half.
+
+## Addresses
+
+`EmailAddress` is created only through `Parse` or `TryParse`, so an instance is always safe to write
+into a header. Rejected: anything without exactly one `@`, an empty local part, a domain that is not a
+dotted name, a local part over 64 characters, an address over 254, and **any control character**.
+
+```csharp
+EmailAddress.TryParse("someone@example.com", out var address);   // true
+EmailAddress.TryParse("not-an-email", out _);                    // false
+EmailAddress.TryParse("a@b.com\r\nBcc: attacker@evil.com", out _);  // false
+```
+
+> **Warning.** That last one matters. MimeKit defends itself against header injection by silently
+> *stripping* CR and LF, which would deliver a mangled address rather than telling anyone; and its own
+> parser accepts `not-an-email` as a valid mailbox. Validation here is not duplication.
+
+## Attachments
+
+```csharp
+Attachments =
+[
+    EmailAttachment.FromFile("invoice.pdf", contentType: "application/pdf"),
+    EmailAttachment.Inline("header-logo", "logo.png", logoBytes, "image/png"),
+]
+```
+
+An inline attachment is referenced from the HTML body as `<img src="cid:header-logo" />`. `FromFile`
+opens the file when the message is sent, not when the attachment is built.
+
+`OpenRead` must return a fresh, readable stream on every call — it may be called more than once for a
+single send — and whoever calls it disposes the result.
+
+## Reading the result
+
+```csharp
+var result = await mailer.SendAsync(message, cancellationToken);
+
+if (result.Succeeded)
+{
+    logger.LogInformation("Sent {MessageId}", result.MessageId);
+}
+```
+
+| `ErrorCode` | Meaning | Transient |
+| --- | --- | --- |
+| `AccountNotFound` | Nothing knows the account name | no |
+| `TransportNotFound` | The account names a transport that is not registered | no |
+| `InvalidAccount` | The account's settings are unusable | no |
+| `InvalidMessage` | The message cannot be sent as written | no |
+| `Authentication` | The credentials were refused | no |
+| `Connection` | Could not reach the server | yes |
+| `Timeout` | The server did not answer in time | yes |
+| `Throttled` | A rate or quota limit, or a 4xx "come back later" | yes |
+| `Rejected` | The server refused this message, with a 5xx | no |
+| `Unknown` | The transport did not classify it | no |
+
+> **Warning.** `Succeeded` means the transport **accepted** the message, not that it was delivered. A
+> server that queues it reports success and may still bounce it later, out of band.
+>
+> `result.Error` can quote a server's reply verbatim, and `result.Exception` carries the underlying
+> failure. Neither appears in `ToString()`, and `Exception` is excluded from JSON — a refusal often
+> echoes the account it refused. Log them; do not return them to a caller.
+
+## Writing a transport
+
+```csharp
+public sealed class SendGridMailTransport : IMailTransport
+{
+    public string Name => "sendgrid";
+
+    public async Task<MailSendResult> SendAsync(EmailMessage message, MailAccount account, CancellationToken cancellationToken)
+    {
+        var apiKey = account.Settings.GetRequiredString("ApiKey");
+
+        // ... and per-send values, if any, from message.Properties
+        return MailSendResult.Success(account.Name, this.Name, messageId);
+    }
+}
+```
+
+Register it with `services.AddMailTransport<SendGridMailTransport>()` and accounts reach it by setting
+`"Transport": "sendgrid"`. An implementation must be stateless and thread-safe, because one instance
+serves every account naming it, and should classify the failures it understands rather than throwing.
+
+`EmailMessage.Properties` is the counterpart of `MailAccount.Settings` for values that vary per
+message rather than per account — a template id, a tag, a scheduled time, an idempotency key. A
+transport reads the names it knows and ignores the rest.

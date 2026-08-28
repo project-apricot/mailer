@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Zero-dependency mailing for .NET: an immutable e-mail message model, named sending accounts whose transport-specific settings stay open-ended, and a pluggable transport contract with results instead of exceptions.</Description>
+    <PackageTags>email;mail;smtp;mailer;transport;messaging</PackageTags>
+  </PropertyGroup>
+
+</Project>

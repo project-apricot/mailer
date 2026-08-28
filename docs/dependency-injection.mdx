@@ -1,0 +1,87 @@
+---
+title: Dependency injection
+description: Registration, configuration binding, startup validation and logging.
+---
+
+# Dependency injection
+
+## Registration
+
+```csharp
+builder.Services.AddMailer(builder.Configuration);
+builder.Services.AddSmtpMailTransport();
+```
+
+Two more overloads: `AddMailer(configuration, sectionName)` to bind a section other than `Mailer`, and
+`AddMailer(Action<MailerOptions>)` to declare accounts in code.
+
+`IMailer`, the account store and the options validator are all singletons, registered with `TryAdd`,
+so this never replaces something already registered and calling it twice is harmless. **No transport
+is registered for you** — which one a host is willing to use is its decision, and a send that quietly
+goes nowhere is worse than one that fails.
+
+Registration order does not matter. A transport or an account source added after `AddMailer` is still
+picked up, because both are collected when the mailer is first constructed.
+
+| Call | What it adds |
+| --- | --- |
+| `AddMailTransport<T>()` | A transport the container builds; de-duplicated by type |
+| `AddMemoryMailTransport()` | The in-memory transport, injectable by its own type so a test can read it back |
+| `AddMailTransport(instance)` | A transport you built, for one that needs arguments or that you read back |
+| `AddMailAccountSource<T>()` | A place to look for accounts before configuration; de-duplicated by type |
+| `AddMailAccountSource(instance)` | The same, without de-duplication |
+| `AddMailAccountStore<T>()` | Replaces the default store, and with it the configured accounts and caching |
+| `AddMailAccountStore(instance)` | The same, for a store you built |
+
+## Reloading
+
+Accounts are read through `IOptionsMonitor<MailerOptions>`, so editing `appsettings.json` takes effect
+on the next send with no restart. Adding an account, changing a host, moving a port — all live, and so
+is `AccountCacheLifetime`, including switching caching off.
+
+A lifetime that is set defers the rest of it, for as long as that lifetime.
+
+## Startup validation
+
+`ValidateOnStart` is wired up, so these fail the host rather than the first mail:
+
+- no transport is registered at all;
+- an account names a transport that is not registered — the message lists the ones that are;
+- an account names no transport, or either of its default addresses is not a usable mailbox;
+- `DefaultAccount` names an account that is not configured;
+- no `DefaultAccount` is set and no account is named `default`, which is the name a send falls back to;
+- no account is configured *and* no account source is registered;
+- an account is declared as a bare value rather than an object — the configuration binder discards
+  that one silently, leaving the account simply absent;
+- `AccountCacheLifetime` is negative, or longer than 24 hours.
+
+Every failure is reported at once, not one per restart.
+
+```
+Mail account 'default' uses transport 'sendgrid', which is not registered. Registered transports: smtp, pickup.
+```
+
+Where an `IMailAccountSource` is registered these checks relax, because a name configuration does not
+have may still be resolvable at send time.
+
+> **Note.** In a bare `ServiceProvider` there is nothing to run the startup hook, so the validator
+> instead runs the first time something reads the options and throws `OptionsValidationException`.
+
+## Logging
+
+Every send is logged: the account, the transport and the elapsed time at `Information`, and the error
+code plus the reason at `Warning`. The failure log carries the exception, which the result deliberately
+keeps out of `ToString()` and out of JSON.
+
+## Replacing what is registered
+
+Register your own `IMailer` or `IMailAccountStore` before `AddMailer` and the `TryAdd` leaves it
+alone; register it after and the container resolves the last one. For an account store, prefer
+`AddMailAccountStore<T>()`: it is the same registration, and it also tells startup validation that a
+store exists.
+
+For a mailer, derive rather than start over. `MailerBase` is the whole sending behaviour with one
+abstract member — `GetCurrentOptions()` — so a mailer only has to say where its options come from;
+`GetDefaultAccountName()` and `DispatchAsync()` are `protected virtual` on top of it. `DefaultMailer`
+is that base with an options object handed in once, and `OptionsAwareMailer` is the same base reading
+them from `IOptionsMonitor` per send.
