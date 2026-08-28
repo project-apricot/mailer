@@ -1,0 +1,194 @@
+---
+title: Accounts
+description: Declaring sending accounts, and supplying them from a database or a secrets manager.
+---
+
+# Accounts
+
+An account is a named identity to send as. It carries the transport that delivers the mail, that
+transport's settings, and the addresses to fall back to when a message does not set them.
+
+```jsonc
+"Mailer": {
+  "DefaultAccount": "default",
+  "Accounts": {
+    "default": {
+      "Transport": "smtp",
+      "DefaultFrom": "Example <no-reply@example.com>",
+      "DefaultReplyTo": "support@example.com",
+      "Settings": { "Host": "smtp.example.com", "Port": 587, "Security": "StartTls" }
+    },
+    "billing": {
+      "Transport": "smtp",
+      "DefaultFrom": { "Address": "billing@example.com", "Name": "Billing" },
+      "EnvelopeFrom": "bounces@example.com",
+      "Settings": { "Host": "smtp.example.com", "Port": 587, "Security": "StartTls" }
+    }
+  }
+}
+```
+
+An address may be an object or a single string, in either the bare or the `Name <address>` form.
+Account names and setting names are matched case-insensitively; the spelling in configuration is the
+one that reaches a log.
+
+## Settings
+
+`Settings` is the transport's own vocabulary, and the core does not interpret it. That is what makes a
+new transport a new package rather than a change here — nothing about the section above has to grow
+for a vendor whose settings look nothing like SMTP's.
+
+| Transport | Settings it reads |
+| --- | --- |
+| `smtp` | `Host`, `Port`, `Security`, `Username`, `Password`, `Timeout` |
+| `pickup` | `Directory` |
+| `memory` | none |
+
+Values are read as text whatever they look like in the file, so `"Port": 587` and `"Port": "587"` are
+the same thing. Typed reads come with a grammar worth knowing:
+
+- **Booleans** must be `true`/`false` in any case. `1`, `yes` and `on` are refused.
+- **Durations** must be `hh:mm:ss`. A bare number is refused, because `TimeSpan` would read `30` as
+  thirty *days* rather than the thirty seconds an operator meant.
+- **Enumerations** must be a member name, in any case. A number is refused, because a stored ordinal
+  would change meaning if the enumeration were ever reordered.
+
+> **Warning.** The section must be flat. A nested object or an array under `Settings` is dropped by
+> the configuration binder with no error at all.
+
+## Secrets
+
+Nothing about a secret is this library's business, which is deliberate: it ships no encryption, no key
+ring and no schema. What it does instead is keep the plaintext out of your repository, because a
+setting can come from anywhere configuration comes from:
+
+```bash
+Mailer__Accounts__default__Settings__Password=...
+```
+
+An environment variable merges into the settings of an account declared in `appsettings.json`, and can
+declare a whole account on its own. User secrets and any configuration provider work the same way.
+
+When a value must be read from somewhere configuration cannot reach, that is what an account source
+is for.
+
+## Accounts from a database or a vault
+
+```csharp
+public sealed class DatabaseMailAccountSource(IServiceScopeFactory scopes) : IMailAccountSource
+{
+    public async Task<MailAccount?> FindAsync(string name, CancellationToken cancellationToken)
+    {
+        using var scope = scopes.CreateScope();
+
+        var row = await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .MailAccounts.SingleOrDefaultAsync(a => a.Name == name, cancellationToken);
+
+        if (row is null)
+        {
+            return null;
+        }
+
+        return new MailAccount
+        {
+            Name = row.Name,
+            Transport = row.Transport,
+            DefaultFrom = EmailAddress.Parse(row.FromAddress, row.FromName),
+            Settings = new MailAccountSettings(
+                new Dictionary<string, string?>
+                {
+                    ["Host"] = row.Host,
+                    ["Port"] = row.Port.ToString(CultureInfo.InvariantCulture),
+                    ["Password"] = this.protector.Unprotect(row.PasswordEncrypted),
+                },
+                row.Name),
+        };
+    }
+}
+```
+
+```csharp
+builder.Services.AddMailAccountSource<DatabaseMailAccountSource>();
+```
+
+Register as many as you have places to look — a database, a vault, a remote service. Each is asked in
+the order it was registered, the first one holding the name wins, and configuration is asked last.
+Registering the *same type* twice is the only no-op.
+
+The interface says nothing about storage, schema, engine or how a credential is protected — decrypting
+whatever it stores encrypted is the source's own job, and `MailAccountSettings` takes the plaintext.
+
+**Sources are asked before configuration.** A credential rotated in the database or the vault is the
+one that gets used; a stale value left behind in `appsettings.json` does not outrank it.
+Configuration is still always consulted as the fallback, so an account declared only there keeps
+working and no registration mistake can make it unreachable.
+
+> **Note.** A source is registered as a **singleton**, because the mailer that consumes it is one. If
+> it needs a scoped dependency, take an `IServiceScopeFactory` or an `IDbContextFactory<T>` and open a
+> scope per lookup, as above.
+
+## Caching
+
+A source is asked once per message. Where that costs a query or a network call, set a lifetime:
+
+```jsonc
+"Mailer": {
+  "AccountCacheLifetime": "00:05:00"
+}
+```
+
+That is the whole opt-in. There is nothing to register: the default store caches, and does not until
+this is set. Absent or `00:00:00` means no caching, which is the default. Because it is a setting like
+any other, staging and production can differ and either can be retuned — or switched off — without a
+restart.
+
+It holds whatever the store resolved, so a source and a configured account are cached alike. The cache
+is the host's own `IMemoryCache`, so entries are bounded and evicted under the memory policy the host
+already configured; keys are namespaced under `ApricotFramework.Mailer.Account:` and sized, so a host
+with a `SizeLimit` still works. A miss is never cached, so an account created later is picked up on the
+next send. `OptionsAwareMailAccountStore.Invalidate(name)` drops one entry, for a host that knows a
+credential has just been rotated.
+
+> **Warning.** A cached entry is a decrypted credential sitting in the process. The lifetime is exactly
+> how long a rotated one keeps being used, and it caches what configuration supplies too — which
+> otherwise reloads on its own. Keep it short, and leave it off until a profiler says otherwise.
+>
+> Values above 24 hours are refused at startup. That ceiling is mostly there to catch the way this
+> setting is usually written wrongly: `"30"` parses as thirty **days**, not thirty seconds.
+
+There is deliberately no distributed cache. A credential should not travel to another server to save a
+lookup.
+
+## Replacing resolution outright
+
+A source *adds* a place to look and leaves configuration behind it as a fallback. To take over
+resolution completely — no configured accounts, your query and nothing else — register a store:
+
+```csharp
+builder.Services.AddMailAccountStore<DatabaseMailAccountStore>();
+```
+
+```csharp
+public sealed class DatabaseMailAccountStore(IServiceScopeFactory scopes) : IMailAccountStore
+{
+    public async Task<MailAccount?> GetAsync(string name, CancellationToken cancellationToken)
+    {
+        // ... the same mapping as the source above
+    }
+}
+```
+
+This replaces the default store, and caching is part of that store — so `AccountCacheLifetime` no
+longer applies and your store decides for itself whether to cache. That is deliberate: a store backed
+by something that already caches should not be wrapped in a second cache with a separate lifetime.
+
+| You want | Register | Configuration still consulted | `AccountCacheLifetime` applies |
+| --- | --- | --- | --- |
+| Another place to look | `IMailAccountSource` | yes, as a fallback | yes |
+| To own resolution | `AddMailAccountStore<T>()` | no | no — your store decides |
+
+> **Note.** Registering `IMailAccountStore` yourself does exactly the same thing;
+> `AddMailAccountStore` is the discoverable spelling, and it also tells startup validation that a
+> store exists so it does not complain that no account is configured.
+
+Most hosts want the first row. Reach for a store only when configuration should play no part at all.

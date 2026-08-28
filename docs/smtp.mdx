@@ -1,0 +1,104 @@
+---
+title: SMTP
+description: SMTP delivery over MailKit, and a pickup directory for seeing what you send.
+---
+
+# SMTP
+
+```csharp
+builder.Services.AddSmtpMailTransport();
+builder.Services.AddPickupDirectoryMailTransport();
+```
+
+Neither call takes configuration: everything a transport needs arrives on the account, so one
+registration serves any number of them. Like the rest of the library, this package has **no ASP.NET Core
+dependency**, so a worker or a console host can use it.
+
+## Settings
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `Host` | *required* | |
+| `Port` | `587` | 1 to 65535 |
+| `Security` | `Auto` | `Auto`, `None`, `SslOnConnect`, `StartTls`, `StartTlsWhenAvailable` |
+| `Username` | none | Omit for a relay that accepts unauthenticated submission |
+| `Password` | none | Required when `Username` is set |
+| `Timeout` | `00:02:00` | Written `hh:mm:ss` |
+
+`Auto` is the default and also the zero value, so a setting that is missing can never leave a session
+unencrypted. A value that is not a member name — `STARTTLS`, say, or a typo — is **refused** rather
+than falling back, for the same reason.
+
+> **Warning.** `StartTlsWhenAvailable` continues in the clear against a server that stops advertising
+> STARTTLS. Prefer `StartTls`, which fails instead.
+>
+> `None` sends the credentials and the message in the clear. Only for a relay on a loopback interface
+> or an already-encrypted link.
+
+## What goes on the wire
+
+A connection, a handshake and an authentication per message. That is the honest cost of sending one
+mail, and it is what keeps the transport stateless.
+
+Only `From` is set, never `Sender`: setting both makes the envelope and the header disagree, which is
+what breaks DMARC alignment. When a message sets `EnvelopeFrom`, that address is used for SMTP
+`MAIL FROM` while `From` stays what the recipient sees — which is how you send as a customer's domain
+and keep bounces, and the SPF record they align with, on your own.
+
+`Priority` is written to `X-Priority`, which has five levels, and folded onto `Importance`, which has
+three and is what most clients actually display.
+
+Headers the message composes itself — `To`, `Cc`, `Bcc`, `From`, `Subject`, `Return-Path`, `Resent-*`
+and the rest — cannot be set through `EmailMessage.Headers`. That is a security boundary, not
+tidiness: MimeKit merges a `Bcc` header into the real recipient list, so a host forwarding a
+user-supplied header bag would otherwise be handing out blind copies of its own mail.
+
+## Certificates
+
+`SmtpMailTransport.ValidateServerCertificate` accepts only a certificate with nothing wrong with it.
+It is `protected virtual`, so a host that must pin a self-signed development certificate can override
+it and register the subclass instead of calling `AddSmtpMailTransport()`.
+
+> **Warning.** An override that returns `true` unconditionally disables certificate validation for
+> every account this transport serves, and no analyzer warns about it. Pin the certificate you expect
+> rather than trusting everything.
+
+## The pickup directory
+
+```jsonc
+"local": {
+  "Transport": "pickup",
+  "DefaultFrom": "no-reply@example.com",
+  "Settings": { "Directory": "./mail-drop" }
+}
+```
+
+Each message is written as a real `.eml`, which opens in any mail client — so an HTML body renders
+exactly as the recipient would see it, including inline images. Useful for development, for a test that
+wants to look at the whole message, and as the drop point a local relay agent consumes.
+
+The file name is generated, never derived from the subject or an address. The message is written under
+a temporary name and moved into place, so an agent watching the directory never reads half of one.
+
+> **Warning.** The file is the whole message in the clear, attachments included. Point it somewhere
+> that is not backed up and not shipped to a log collector.
+
+## In memory
+
+The core package's `MemoryMailTransport` keeps messages instead of delivering them, for a test that
+asserts on what would have been sent:
+
+```csharp
+services.AddMemoryMailTransport();
+
+// ... after the send
+var sent = Assert.Single(provider.GetRequiredService<MemoryMailTransport>().GetSentMessages());
+```
+
+One instance is registered under both `IMailTransport` and its own type, so what a send writes to is
+what you read back. Accounts reach it with `"Transport": "memory"`.
+
+> **Note.** Nothing registers it for you, and that is deliberate — a transport that accepts every
+> message and delivers none is the last thing that should be present in a host by default. The same
+> goes for the pickup directory and for SMTP: startup fails if an account names a transport you did
+> not add.

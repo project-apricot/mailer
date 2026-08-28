@@ -1,0 +1,26 @@
+@host = http://localhost:5218
+
+### The default account is the pickup directory, so this needs no server: it writes ./mail-drop/*.eml.
+POST {{host}}/welcome?name=John
+
+### A named account. "capture" is the in-memory transport, which keeps the message instead of sending.
+POST {{host}}/welcome?name=Ada&account=capture
+
+### Reads back what the in-memory transport kept. Empty until the request above has run.
+GET {{host}}/captured
+
+### A non-ASCII name, to see RFC 2047 encoding in the written .eml rather than mojibake.
+POST {{host}}/welcome?name=Zo%C3%AB%20%E4%BD%A0%E5%A5%BD
+
+### Refused before a message is built: %0D%0A decodes to CRLF, and EmailAddress.TryParse will not
+### make a display name out of it. MimeKit would have stripped it and delivered a mangled header.
+POST {{host}}/welcome?name=John%0D%0ABcc:%20attacker@evil.com
+
+### AccountNotFound, retryable false: nothing declares an account by this name. Startup validation
+### cannot catch this one, because a name may always come from an IMailAccountSource at send time.
+POST {{host}}/welcome?name=Ada&account=nope
+
+### A real server. Uncomment the "live" account in appsettings.json first and supply the password as
+### Mailer__Accounts__live__Settings__Password in the environment. Without it the account resolves
+### and the send fails with InvalidAccount, naming the missing setting.
+POST {{host}}/welcome?name=John&account=live
