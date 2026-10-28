@@ -11,12 +11,18 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      test-stack:
+      mailkit:
         patterns:
-          - "xunit*"
-          - "Microsoft.NET.Test.Sdk"
-          - "coverlet.*"
-          - "Microsoft.Testing.*"
+          - "MailKit"
+          - "MimeKit"
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.Extensions.*"
+    ignore:
+      - dependency-name: "xunit*"
+      - dependency-name: "Microsoft.NET.Test.Sdk"
+      - dependency-name: "coverlet.*"
+      - dependency-name: "Microsoft.Testing.*"
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -29,3 +35,7 @@ updates:
       - ci
     commit-message:
       prefix: "ci(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
